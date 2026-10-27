@@ -1,0 +1,76 @@
+{
+    "name":  "aksos-react-native-epub-reader",
+    "version":  "0.1.0",
+    "description":  "A complete EPUB reader for React Native and Expo: page curl and slide, themes, highlights, notes, bookmarks, search, line guide, and full right-to-left support (Pashto, Dari, Persian, Arabic, Urdu).",
+    "keywords":  [
+                     "react-native",
+                     "expo",
+                     "epub",
+                     "ebook",
+                     "reader",
+                     "book",
+                     "pashto",
+                     "dari",
+                     "persian",
+                     "arabic",
+                     "rtl",
+                     "highlight",
+                     "page-curl"
+                 ],
+    "license":  "MIT",
+    "main":  "lib/index.js",
+    "types":  "lib/index.d.ts",
+    "react-native":  "src/index.ts",
+    "source":  "src/index.ts",
+    "files":  [
+                  "src",
+                  "lib",
+                  "README.md",
+                  "LICENSE"
+              ],
+    "scripts":  {
+                    "build:engine":  "node scripts/build-engine.js",
+                    "build:lib":  "node scripts/build-lib.js",
+                    "typecheck":  "tsc -p tsconfig.build.json --noEmit",
+                    "prepublishOnly":  "npm run build:engine \u0026\u0026 npm run build:lib",
+                    "test:harness":  "node test/serve.js"
+                },
+    "peerDependencies":  {
+                             "expo-audio":  "*",
+                             "expo-blur":  "*",
+                             "expo-screen-orientation":  "*",
+                             "react":  "\u003e=18",
+                             "react-native":  "\u003e=0.73",
+                             "react-native-svg":  "\u003e=13",
+                             "react-native-webview":  "\u003e=13"
+                         },
+    "peerDependenciesMeta":  {
+                                 "expo-audio":  {
+                                                    "optional":  true
+                                                },
+                                 "expo-blur":  {
+                                                   "optional":  true
+                                               },
+                                 "expo-screen-orientation":  {
+                                                                 "optional":  true
+                                                             }
+                             },
+    "devDependencies":  {
+                            "@types/react":  "^18.3.0",
+                            "jszip":  "3.10.1",
+                            "react":  "18.3.1",
+                            "react-native":  "0.76.5",
+                            "react-native-svg":  "15.9.0",
+                            "react-native-webview":  "13.12.5",
+                            "typescript":  "^5.6.0"
+                        },
+    "author":  "Aksos",
+    "homepage":  "https://github.com/AhmadNasary/aksos-react-native-epub-reader#readme",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/AhmadNasary/aksos-react-native-epub-reader.git"
+                   },
+    "bugs":  {
+                 "url":  "https://github.com/AhmadNasary/aksos-react-native-epub-reader/issues"
+             }
+}

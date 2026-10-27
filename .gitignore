@@ -1,0 +1,13 @@
+node_modules/
+test/*.epub
+test/*.b64
+lib/
+example/node_modules/
+example/android/
+example/ios/
+.export-test/
+.expo/
+example/.expo/
+test/reader.html
+/package-lock.json
+.DS_Store

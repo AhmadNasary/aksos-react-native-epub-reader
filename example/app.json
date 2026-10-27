@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "EPUB Reader Example",
+    "slug": "epub-reader-example",
+    "version": "1.0.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.anonymous.epubreaderexample"
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-status-bar",
+      "expo-audio"
+    ]
+  }
+}
