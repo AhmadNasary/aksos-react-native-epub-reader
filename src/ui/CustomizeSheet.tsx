@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-nat
 import { FONTS, getFont, serifFont } from '../themes';
 import type { ChromeColors } from '../themes';
 import type { ColumnsSetting, ReaderSettings, ThemeColors } from '../types';
+import { useLabels } from '../strings';
 import { Icon } from './Icons';
 import type { IconName } from './Icons';
 import { Sheet } from './Sheet';
@@ -19,7 +20,6 @@ interface Props {
   onClose: () => void;
 }
 
-const COLUMN_LABEL: Record<string, string> = { auto: 'Auto Set', '1': 'One', '2': 'Two' };
 const GREEN = { true: '#34c759' };
 
 function Toggle(props: React.ComponentProps<typeof Switch>) {
@@ -32,6 +32,8 @@ function Toggle(props: React.ComponentProps<typeof Switch>) {
 
 /** "Customize Theme" sheet: font, bold, spacing, margins, columns, justify, sound. */
 export function CustomizeSheet({ visible, colors, page, settings: s, sample, onChange, onReset, onClose }: Props) {
+  const L = useLabels();
+  const COLUMN_LABEL: Record<string, string> = { auto: L.columnsAuto, '1': L.columnsOne, '2': L.columnsTwo };
   const [fonts, setFonts] = useState(false);
   const [columnsMenu, setColumnsMenu] = useState(false);
   const off = !s.customize;
@@ -78,7 +80,7 @@ export function CustomizeSheet({ visible, colors, page, settings: s, sample, onC
   };
 
   return (
-    <Sheet visible={visible} colors={colors} onClose={close} closeIcon="check" title="Customize Theme" height="92%">
+    <Sheet visible={visible} colors={colors} onClose={close} closeIcon="check" title={L.customizeTheme} height="92%">
       <View style={[styles.preview, { backgroundColor: page.bg }]}>
         <Text style={[styles.aa, { color: page.fg, fontFamily: previewFont }]}>Aa</Text>
         <Text
@@ -97,7 +99,7 @@ export function CustomizeSheet({ visible, colors, page, settings: s, sample, onC
         <View style={[styles.group, { backgroundColor: colors.card }]}>
           {row(
             'textSize',
-            'Font',
+            L.font,
             <View style={styles.value2}>
               <Text style={{ color: colors.subtext, fontSize: 17 }}>{font.name}</Text>
               <Icon name={fonts ? 'chevronUp' : 'chevronRight'} color={colors.subtext} size={18} />
@@ -119,22 +121,22 @@ export function CustomizeSheet({ visible, colors, page, settings: s, sample, onC
                 <Text style={[styles.label, { color: colors.text }]}>{f.name}</Text>
               </Pressable>
             ))}
-          {row('bold', 'Bold Text', <Toggle value={s.bold} onValueChange={(v) => onChange({ bold: v })} trackColor={GREEN} />)}
+          {row('bold', L.boldText, <Toggle value={s.bold} onValueChange={(v) => onChange({ bold: v })} trackColor={GREEN} />)}
         </View>
 
-        <Text style={[styles.heading, { color: colors.text }]}>Accessibility & Layout Options</Text>
+        <Text style={[styles.heading, { color: colors.text }]}>{L.accessibilityLayout}</Text>
         <View style={[styles.group, { backgroundColor: colors.card }]}>
-          {row('sliders', 'Customize', <Toggle value={s.customize} onValueChange={(v) => onChange({ customize: v })} trackColor={GREEN} />, undefined, false)}
-          {sliderRow('LINE SPACING', 'lineSpacing', s.lineHeight, 1.1, 2.2, 0.05, s.lineHeight.toFixed(2), 'lineHeight')}
-          {sliderRow('CHARACTER SPACING', 'charSpacing', s.letterSpacing, -50, 100, 5, `${s.letterSpacing}%`, 'letterSpacing')}
-          {sliderRow('WORD SPACING', 'wordSpacing', s.wordSpacing, -50, 100, 5, `${s.wordSpacing}%`, 'wordSpacing')}
-          {sliderRow('MARGINS', 'margins', s.margins, -50, 100, 5, `${s.margins}%`, 'margins')}
+          {row('sliders', L.customize, <Toggle value={s.customize} onValueChange={(v) => onChange({ customize: v })} trackColor={GREEN} />, undefined, false)}
+          {sliderRow(L.lineSpacing, 'lineSpacing', s.lineHeight, 1.1, 2.2, 0.05, s.lineHeight.toFixed(2), 'lineHeight')}
+          {sliderRow(L.characterSpacing, 'charSpacing', s.letterSpacing, -50, 100, 5, `${s.letterSpacing}%`, 'letterSpacing')}
+          {sliderRow(L.wordSpacing, 'wordSpacing', s.wordSpacing, -50, 100, 5, `${s.wordSpacing}%`, 'wordSpacing')}
+          {sliderRow(L.margins, 'margins', s.margins, -50, 100, 5, `${s.margins}%`, 'margins')}
         </View>
 
         <View style={[styles.group, { backgroundColor: colors.card, marginTop: 16 }]}>
           {row(
             'columns',
-            'Columns',
+            L.columns,
             <View style={styles.value2}>
               <Text style={{ color: colors.subtext, fontSize: 17 }}>{COLUMN_LABEL[String(s.columns)]}</Text>
               <Icon name={columnsMenu ? 'chevronUp' : 'chevronDown'} color={colors.subtext} size={18} />
@@ -156,12 +158,12 @@ export function CustomizeSheet({ visible, colors, page, settings: s, sample, onC
                 <Text style={[styles.label, { color: colors.text }]}>{COLUMN_LABEL[String(c)]}</Text>
               </Pressable>
             ))}
-          {row('justify', 'Justify Text', <Toggle value={s.justify} onValueChange={(v) => onChange({ justify: v })} trackColor={GREEN} />)}
-          {row(s.pageSound ? 'sound' : 'soundOff', 'Page Turn Sound', <Toggle value={s.pageSound} onValueChange={(v) => onChange({ pageSound: v })} trackColor={GREEN} />)}
+          {row('justify', L.justifyText, <Toggle value={s.justify} onValueChange={(v) => onChange({ justify: v })} trackColor={GREEN} />)}
+          {row(s.pageSound ? 'sound' : 'soundOff', L.pageTurnSound, <Toggle value={s.pageSound} onValueChange={(v) => onChange({ pageSound: v })} trackColor={GREEN} />)}
         </View>
 
-        <Pressable onPress={onReset} style={[styles.reset, { backgroundColor: colors.card }]}>
-          <Text style={{ color: '#ff3b30', fontSize: 18, fontWeight: '600' }}>Reset Theme</Text>
+        <Pressable onPress={onReset} style={[styles.reset, { backgroundColor: colors.card }]} accessibilityRole="button">
+          <Text style={{ color: '#ff3b30', fontSize: 18, fontWeight: '600' }}>{L.resetTheme}</Text>
         </Pressable>
       </ScrollView>
     </Sheet>

@@ -154,9 +154,11 @@ changes font size, theme or rotates the device.
 
 | Prop | Type | Description |
 |---|---|---|
-| `source` | `{ uri: string } \| { base64: string }` | **Required.** The EPUB. |
+| `source` | `{ uri; headers?; key? } \| { base64; key? }` | **Required.** The EPUB: a `file://`, `content://` (Android) or `https://` uri, or base64 data. `key` identifies the book; a different source starts a fresh reader (highlights, bookmarks and position of one book never reach another). |
 | `title` | `string` | Shown in Contents until the book's own title is read. |
-| `safeInsets` | `{ top: number; bottom: number }` | Status-bar and home-indicator space. Use `useSafeAreaInsets()`. |
+| `safeInsets` | `{ top; bottom; left?; right? }` | Status-bar, home-indicator and (landscape) notch space. Use `useSafeAreaInsets()` from `react-native-safe-area-context`. Without it a guess from the screen size is used. |
+| `labels` | `Partial<ReaderLabels>` | Every text of the interface, for translation (Pashto, Dari, Arabic ...). `formatNumber` lets you show Arabic-Indic digits. See `DEFAULT_LABELS`. |
+| `maxFileSize` | `number` | Largest EPUB in bytes (default 150 MB, `0` = no limit). Bigger files raise an error instead of crashing low-memory phones. |
 | `initialLocation` | `{ spine: number; offset: number }` | Where to open. Defaults to the start. |
 | `initialSettings` | `Partial<ReaderSettings>` | Theme, font, size, spacing ... |
 | `initialHighlights` | `Highlight[]` | |
@@ -168,7 +170,7 @@ changes font size, theme or rotates the device.
 | `onSettingsChange` | `(s: ReaderSettings) => void` | |
 | `onMetadata` | `(m: BookMetadata) => void` | `title`, `author`, `language`, `publisher`. |
 | `onCover` | `(dataUri: string) => void` | The cover image, if the book has one. |
-| `onError` | `(message: string) => void` | Unreadable file, DRM, ... |
+| `onError` | `(message: string) => void` | Unreadable file, DRM, ... The reader itself shows an error screen with **Try again** and **Close**, so the user is never stuck. |
 
 ---
 
@@ -298,10 +300,12 @@ The sound can be disabled by the user in Themes & Settings, Customize.
 
 **Controls are not blurred on Android.** `expo-blur` blur is limited on Android; the controls fall back to translucent colour.
 
-**A book will not open.** `onError` receives the reason. DRM-protected files (Adobe, Apple FairPlay) cannot be opened.
+**A book will not open.** `onError` receives the reason and the reader shows it with Try again / Close. DRM-protected files (Adobe, Apple FairPlay, Readium LCP) cannot be opened and are reported as such.
 
-**Opening is slow for a very large book.** The file is sent to the page engine as base64. Typical novels take well under
-a second; a 50 MB illustrated book will be slow.
+**The reader goes blank after the app was in the background.** If the system kills the web view process (low memory), the reader restarts by itself at the last position.
+
+**Opening is slow for a very large book.** The file is sent to the page engine as base64 in pieces. Typical novels take well under
+a second; a 50 MB illustrated book will be slow, and files above `maxFileSize` are refused.
 
 ---
 
@@ -309,10 +313,12 @@ a second; a 50 MB illustrated book will be slow.
 
 - Reflowable EPUBs only. Fixed-layout EPUBs and media overlays are not supported.
 - Themes and fonts are chosen from the built-in lists (no custom theme prop yet).
-- Embedded fonts that are obfuscated by the publisher fall back to a system font.
+- Vertical writing modes (Japanese `writing-mode: vertical-rl`) are laid out horizontally.
+- Character spacing is ignored in right-to-left books: it would break the joins of Arabic-script letters.
+- Audio and video elements in a book are removed.
 - Text selection and highlights work in the chapter that is on screen; in Scroll mode a neighbouring chapter becomes
   selectable once it scrolls into the middle of the screen.
-- Search folds case and common Arabic / Persian letter variants (for example ي and ی) but does not strip diacritics.
+- Search ignores case, diacritics (tashkeel), tatweel and ZWNJ, unifies Arabic / Persian letter variants (for example ي and ی) and all digit systems.
 - The page curl is a geometric corner fold, not a physical simulation of paper.
 
 ---
@@ -325,6 +331,13 @@ The page-turn sounds (`src/assets/page-turn-*.wav`) are trimmed and softened rec
 "10 Book Page Flips" by StarNinjas (https://opengameart.org/content/10-book-page-flips), released under CC0.
 
 EPUB parsing uses [JSZip](https://stuk.github.io/jszip/).
+
+### Security
+
+Books are untrusted input. Chapter HTML is sanitized (scripts, event handlers, `javascript:` URLs, forms, `<base>`, remote images and
+styles are removed), chapters render in frames under a Content-Security-Policy that blocks script and network, and only
+`http(s)` and `mailto` links can leave the book, after a confirmation. Publisher font obfuscation (IDPF and Adobe) is decoded, so
+embedded fonts work; real DRM is detected and refused.
 
 ### Developing
 

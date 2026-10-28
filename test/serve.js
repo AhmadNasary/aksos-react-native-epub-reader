@@ -6,7 +6,7 @@ const HOOK = '<script>window.__events=[];window.__harnessPost=function(t,d){wind
 http.createServer((req, res) => {
   const url = req.url.split('?')[0];
   if (url === '/' || url === '/reader.html') {
-    const html = fs.readFileSync(path.join(__dirname, 'reader.html'), 'utf8').replace('<script>', HOOK + '<script>');
+    const html = fs.readFileSync(path.join(__dirname, 'reader.html'), 'utf8').replace('<script>', HOOK + '<script>').replace("default-src 'none';", "default-src 'none'; connect-src 'self';");
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     return res.end(html);
   }

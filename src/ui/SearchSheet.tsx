@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FlatList, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ChromeColors } from '../themes';
 import type { SearchResult } from '../types';
+import { useLabels } from '../strings';
 import { Icon } from './Icons';
 import { Sheet } from './Sheet';
 
@@ -16,7 +17,19 @@ interface Props {
 }
 
 export function SearchSheet({ visible, colors, results, searching, onClose, onSearch, onPick }: Props) {
+  const L = useLabels();
   const [q, setQ] = useState('');
+  const [kb, setKb] = useState(0);
+
+  // the sheet sits at the bottom, so the keyboard would cover the lower results
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', (e) => setKb(e.endCoordinates?.height || 0));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKb(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
@@ -27,13 +40,14 @@ export function SearchSheet({ visible, colors, results, searching, onClose, onSe
   }, [q]);
 
   return (
-    <Sheet visible={visible} colors={colors} onClose={onClose} height="85%" title="Search">
+    <Sheet visible={visible} colors={colors} onClose={onClose} height="85%" title={L.search}>
       <View style={[styles.field, { backgroundColor: colors.card }]}>
         <Icon name="search" color={colors.subtext} size={20} />
         <TextInput
           value={q}
           onChangeText={setQ}
-          placeholder="Search in book"
+          placeholder={L.searchInBook}
+          accessibilityLabel={L.searchInBook}
           placeholderTextColor={colors.subtext}
           style={[styles.input, { color: colors.text }]}
           autoCorrect={false}
@@ -45,16 +59,18 @@ export function SearchSheet({ visible, colors, results, searching, onClose, onSe
       <FlatList
         data={results}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        contentContainerStyle={{ paddingBottom: kb }}
         keyExtractor={(_, i) => String(i)}
         ListHeaderComponent={
           q.trim().length >= 2 ? (
             <Text style={[styles.count, { color: colors.subtext }]}>
-              {searching ? 'Searching...' : `${results.length}${results.length >= 500 ? '+' : ''} results`}
+              {searching ? L.searching : results.length === 0 ? L.noResults : `${L.formatNumber(results.length)}${results.length >= 500 ? '+' : ''}`}
             </Text>
           ) : null
         }
         renderItem={({ item }) => (
-          <Pressable onPress={() => onPick(item)} style={[styles.row, { borderColor: colors.separator }]}>
+          <Pressable onPress={() => onPick(item)} style={[styles.row, { borderColor: colors.separator }]} accessibilityRole="button">
             <Text style={[styles.chapter, { color: colors.accent }]} numberOfLines={1}>
               {item.chapter}
             </Text>

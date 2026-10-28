@@ -3,6 +3,7 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 import type { ChromeColors } from '../themes';
 import { Glass } from './Glass';
+import { useLabels } from '../strings';
 import { Icon } from './Icons';
 
 interface Props {
@@ -21,13 +22,14 @@ interface Props {
 
 /** Rounded frosted-glass sheet: the book stays faintly visible behind it. */
 export function Sheet({ visible, title, subtitle, colors, height = '70%', closeIcon = 'x', onClose, children, overlay }: Props) {
+  const L = useLabels();
   const button =
     closeIcon === 'check' ? (
-      <Pressable onPress={onClose} hitSlop={10} style={[styles.circle, { backgroundColor: colors.dark ? '#ffffff' : '#000000' }]} accessibilityRole="button" accessibilityLabel="Done">
+      <Pressable onPress={onClose} hitSlop={10} style={[styles.circle, { backgroundColor: colors.dark ? '#ffffff' : '#000000' }]} accessibilityRole="button" accessibilityLabel={L.done}>
         <Icon name="check" color={colors.dark ? '#000000' : '#ffffff'} size={24} strokeWidth={2.2} />
       </Pressable>
     ) : (
-      <Pressable onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close">
+      <Pressable onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel={L.close}>
         <Glass dark={colors.dark} background={colors.glass} border={colors.glassBorder} style={styles.circle}>
           <Icon name="close" color={colors.text} size={22} />
         </Glass>
@@ -42,7 +44,7 @@ export function Sheet({ visible, title, subtitle, colors, height = '70%', closeI
           {closeIcon === 'x' && button}
           <View style={styles.titleBox} pointerEvents="none">
             {!!title && (
-              <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>
+              <Text style={[styles.title, { color: colors.text }]} numberOfLines={1} maxFontSizeMultiplier={1.3} accessibilityRole="header">
                 {title}
               </Text>
             )}

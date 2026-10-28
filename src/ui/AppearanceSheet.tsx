@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { isDark, serifFont, THEMES } from '../themes';
 import type { ChromeColors } from '../themes';
 import type { Appearance, PageTurn, ReaderSettings } from '../types';
+import { useLabels } from '../strings';
+import type { ReaderLabels } from '../strings';
 import { Icon } from './Icons';
 import type { IconName } from './Icons';
 import { Sheet } from './Sheet';
@@ -20,18 +22,18 @@ interface Props {
 
 const SIZE = { min: 12, max: 40, step: 2 };
 
-const TURNS: { id: PageTurn; label: string; icon: IconName }[] = [
-  { id: 'slide', label: 'Slide', icon: 'pageSlide' },
-  { id: 'curl', label: 'Curl', icon: 'pageCurl' },
-  { id: 'fade', label: 'Fast Fade', icon: 'pageFade' },
-  { id: 'scroll', label: 'Scroll', icon: 'pageScroll' }
+const TURNS: { id: PageTurn; label: keyof ReaderLabels; icon: IconName }[] = [
+  { id: 'slide', label: 'slide', icon: 'pageSlide' },
+  { id: 'curl', label: 'curl', icon: 'pageCurl' },
+  { id: 'fade', label: 'fastFade', icon: 'pageFade' },
+  { id: 'scroll', label: 'scrollMode', icon: 'pageScroll' }
 ];
 
-const APPEARANCES: { id: Appearance; label: string; icon: IconName; key: string }[] = [
-  { id: 'light', label: 'Light', icon: 'sun', key: 'light' },
-  { id: 'dark', label: 'Dark', icon: 'moon', key: 'dark' },
-  { id: 'device', label: 'Match Device', icon: 'contrast', key: 'device' },
-  { id: 'device', label: 'Match Surroundings', icon: 'sunLow', key: 'surroundings' }
+const APPEARANCES: { id: Appearance; label: keyof ReaderLabels; icon: IconName; key: string }[] = [
+  { id: 'light', label: 'light', icon: 'sun', key: 'light' },
+  { id: 'dark', label: 'dark', icon: 'moon', key: 'dark' },
+  { id: 'device', label: 'matchDevice', icon: 'contrast', key: 'device' },
+  { id: 'device', label: 'matchSurroundings', icon: 'sunLow', key: 'surroundings' }
 ];
 
 /** Icon of the current appearance choice: the button always shows the state it is in. */
@@ -39,7 +41,12 @@ const appearanceIcon = (a: Appearance): IconName => (a === 'light' ? 'sun' : a =
 
 /** "Themes & Settings" sheet. */
 export function AppearanceSheet({ visible, colors, settings: s, systemDark, onChange, onCustomize, onClose }: Props) {
+  const L = useLabels();
   const [menu, setMenu] = useState<null | 'turn' | 'appearance'>(null);
+  // a popup left open must not reappear the next time the sheet is shown
+  useEffect(() => {
+    if (!visible) setMenu(null);
+  }, [visible]);
   const dark = isDark(s, systemDark);
   const turn = TURNS.find((t) => t.id === s.pageTurn) || TURNS[0];
 
@@ -59,7 +66,7 @@ export function AppearanceSheet({ visible, colors, settings: s, systemDark, onCh
               >
                 <View style={styles.check}>{s.pageTurn === t.id && <Icon name="check" color={colors.text} size={20} />}</View>
                 <Icon name={t.icon} color={colors.text} size={24} />
-                <Text style={[styles.menuText, { color: colors.text }]}>{t.label}</Text>
+                <Text style={[styles.menuText, { color: colors.text }]}>{L[t.label] as string}</Text>
               </Pressable>
             ))
           : APPEARANCES.map((a) => (
@@ -73,7 +80,7 @@ export function AppearanceSheet({ visible, colors, settings: s, systemDark, onCh
               >
                 <View style={styles.check}>{s.appearance === a.id && a.key !== 'surroundings' && <Icon name="check" color={colors.text} size={20} />}</View>
                 <Icon name={a.icon} color={colors.text} size={24} />
-                <Text style={[styles.menuText, { color: colors.text }]}>{a.label}</Text>
+                <Text style={[styles.menuText, { color: colors.text }]}>{L[a.label] as string}</Text>
               </Pressable>
             ))}
       </View>
@@ -81,14 +88,15 @@ export function AppearanceSheet({ visible, colors, settings: s, systemDark, onCh
   );
 
   return (
-    <Sheet visible={visible} colors={colors} onClose={onClose} title="Themes & Settings" height="auto" overlay={menuView || undefined}>
+    <Sheet visible={visible} colors={colors} onClose={onClose} title={L.themesSettings} height="auto" overlay={menuView || undefined}>
       <View style={styles.body}>
         <View style={styles.row}>
           <View style={[styles.pill, { flex: 1, backgroundColor: colors.card }]}>
             <Pressable
               style={styles.half}
               onPress={() => onChange({ fontSize: Math.max(SIZE.min, s.fontSize - SIZE.step) })}
-              accessibilityLabel="Smaller text"
+              accessibilityRole="button"
+              accessibilityLabel={L.smallerText}
             >
               <Text style={{ color: colors.text, fontSize: 15, fontWeight: '500' }}>A</Text>
             </Pressable>
@@ -96,16 +104,17 @@ export function AppearanceSheet({ visible, colors, settings: s, systemDark, onCh
             <Pressable
               style={styles.half}
               onPress={() => onChange({ fontSize: Math.min(SIZE.max, s.fontSize + SIZE.step) })}
-              accessibilityLabel="Larger text"
+              accessibilityRole="button"
+              accessibilityLabel={L.largerText}
             >
               <Text style={{ color: colors.text, fontSize: 26, fontWeight: '500' }}>A</Text>
             </Pressable>
           </View>
           <View style={[styles.pill, { width: 150, backgroundColor: colors.card }]}>
-            <Pressable style={[styles.half, menu === 'turn' && { backgroundColor: colors.separator }]} onPress={() => setMenu(menu === 'turn' ? null : 'turn')} accessibilityLabel={`Page turn style: ${turn.label}`}>
+            <Pressable style={[styles.half, menu === 'turn' && { backgroundColor: colors.separator }]} onPress={() => setMenu(menu === 'turn' ? null : 'turn')} accessibilityRole="button" accessibilityLabel={`${L.pageTurnStyle}: ${L[turn.label] as string}`}>
               <Icon name={turn.icon} color={colors.text} size={26} />
             </Pressable>
-            <Pressable style={[styles.half, menu === 'appearance' && { backgroundColor: colors.separator }]} onPress={() => setMenu(menu === 'appearance' ? null : 'appearance')} accessibilityLabel="Appearance">
+            <Pressable style={[styles.half, menu === 'appearance' && { backgroundColor: colors.separator }]} onPress={() => setMenu(menu === 'appearance' ? null : 'appearance')} accessibilityRole="button" accessibilityLabel={L.appearance}>
               <Icon name={appearanceIcon(s.appearance)} color={colors.text} size={26} />
             </Pressable>
           </View>
@@ -140,7 +149,7 @@ export function AppearanceSheet({ visible, colors, settings: s, systemDark, onCh
 
         <Pressable onPress={onCustomize} style={[styles.customize, { backgroundColor: colors.card }]} accessibilityRole="button">
           <Icon name="sliders" color={colors.text} size={22} />
-          <Text style={{ color: colors.text, fontSize: 18, fontWeight: '600', marginStart: 10 }}>Customize</Text>
+          <Text style={{ color: colors.text, fontSize: 18, fontWeight: '600', marginStart: 10 }}>{L.customize}</Text>
         </Pressable>
       </View>
     </Sheet>

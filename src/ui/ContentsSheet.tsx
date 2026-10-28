@@ -3,6 +3,7 @@ import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native
 import { HIGHLIGHT_COLORS } from '../themes';
 import type { ChromeColors } from '../themes';
 import type { Bookmark, Highlight, TocItem } from '../types';
+import { useLabels } from '../strings';
 import { Sheet } from './Sheet';
 
 export type ContentsTab = 'contents' | 'bookmarks' | 'notes';
@@ -28,20 +29,21 @@ interface Props {
   onDeleteHighlight: (id: string) => void;
 }
 
-const TABS: { id: ContentsTab; label: string }[] = [
-  { id: 'contents', label: 'Chapters' },
-  { id: 'bookmarks', label: 'Bookmarks' },
-  { id: 'notes', label: 'Highlights' }
+const TABS: { id: ContentsTab; label: 'chapters' | 'bookmarks' | 'highlights' }[] = [
+  { id: 'contents', label: 'chapters' },
+  { id: 'bookmarks', label: 'bookmarks' },
+  { id: 'notes', label: 'highlights' }
 ];
 
 /** Contents sheet: Chapters | Bookmarks | Highlights, each row with its page number. */
 export function ContentsSheet(p: Props) {
   const { colors } = p;
+  const L = useLabels();
   const [tab, setTab] = useState<ContentsTab>(p.initialTab || 'contents');
-  const confirmDelete = (what: string, fn: () => void) =>
-    Alert.alert(`Delete ${what}?`, undefined, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: fn }
+  const confirmDelete = (title: string, fn: () => void) =>
+    Alert.alert(title, undefined, [
+      { text: L.cancel, style: 'cancel' },
+      { text: L.delete, style: 'destructive', onPress: fn }
     ]);
   const empty = (text: string) => <Text style={[styles.empty, { color: colors.subtext }]}>{text}</Text>;
   const rowBorder = { borderColor: colors.separator };
@@ -57,7 +59,7 @@ export function ContentsSheet(p: Props) {
             accessibilityRole="tab"
             accessibilityState={{ selected: tab === t.id }}
           >
-            <Text style={{ color: colors.text, fontWeight: tab === t.id ? '600' : '400', fontSize: 16 }}>{t.label}</Text>
+            <Text style={{ color: colors.text, fontWeight: tab === t.id ? '600' : '400', fontSize: 16 }} maxFontSizeMultiplier={1.3}>{L[t.label]}</Text>
           </Pressable>
         ))}
       </View>
@@ -66,15 +68,15 @@ export function ContentsSheet(p: Props) {
         <FlatList
           data={p.toc}
           keyExtractor={(_, i) => String(i)}
-          ListEmptyComponent={empty('No table of contents')}
+          ListEmptyComponent={empty(L.noToc)}
           renderItem={({ item }) => {
             const active = item.spine === p.currentSpine && !item.fragment;
             return (
-              <Pressable onPress={() => p.onGoToc(item)} style={[styles.row, rowBorder, { paddingStart: 20 + item.level * 18 }]}>
+              <Pressable onPress={() => p.onGoToc(item)} accessibilityRole="button" style={[styles.row, rowBorder, { paddingStart: 20 + item.level * 18 }]}>
                 <Text style={[styles.rowText, { color: active ? colors.accent : colors.text, flex: 1 }]} numberOfLines={2}>
                   {item.label}
                 </Text>
-                <Text style={[styles.page, { color: colors.subtext }]}>{p.pageOf(item.spine, 0)}</Text>
+                <Text style={[styles.page, { color: colors.subtext }]}>{L.formatNumber(p.pageOf(item.spine, 0))}</Text>
               </Pressable>
             );
           }}
@@ -85,11 +87,11 @@ export function ContentsSheet(p: Props) {
         <FlatList
           data={p.bookmarks.slice().sort((a, b) => a.progress - b.progress)}
           keyExtractor={(b) => b.id}
-          ListEmptyComponent={empty('No bookmarks yet. Tap the bookmark button while reading.')}
+          ListEmptyComponent={empty(L.noBookmarks)}
           renderItem={({ item }) => (
             <Pressable
               onPress={() => p.onGoBookmark(item)}
-              onLongPress={() => confirmDelete('bookmark', () => p.onDeleteBookmark(item.id))}
+              onLongPress={() => confirmDelete(L.deleteBookmark, () => p.onDeleteBookmark(item.id))}
               style={[styles.row, rowBorder]}
             >
               <View style={{ flex: 1 }}>
@@ -98,7 +100,7 @@ export function ContentsSheet(p: Props) {
                   {item.excerpt}
                 </Text>
               </View>
-              <Text style={[styles.page, { color: colors.subtext }]}>{p.pageOf(item.spine, item.offset)}</Text>
+              <Text style={[styles.page, { color: colors.subtext }]}>{L.formatNumber(p.pageOf(item.spine, item.offset))}</Text>
             </Pressable>
           )}
         />
@@ -108,11 +110,11 @@ export function ContentsSheet(p: Props) {
         <FlatList
           data={p.highlights.slice().sort((a, b) => a.spine - b.spine || a.start - b.start)}
           keyExtractor={(h) => h.id}
-          ListEmptyComponent={empty('No highlights or notes yet. Select text to add one.')}
+          ListEmptyComponent={empty(L.noHighlights)}
           renderItem={({ item }) => (
             <Pressable
               onPress={() => p.onGoHighlight(item)}
-              onLongPress={() => confirmDelete('highlight', () => p.onDeleteHighlight(item.id))}
+              onLongPress={() => confirmDelete(L.deleteHighlight, () => p.onDeleteHighlight(item.id))}
               style={[styles.row, rowBorder]}
             >
               <View style={[styles.bar, { backgroundColor: HIGHLIGHT_COLORS[item.color] }]} />
@@ -123,7 +125,7 @@ export function ContentsSheet(p: Props) {
                 </Text>
                 {!!item.chapter && <Text style={[styles.meta, { color: colors.subtext }]}>{item.chapter}</Text>}
               </View>
-              <Text style={[styles.page, { color: colors.subtext }]}>{p.pageOf(item.spine, item.start)}</Text>
+              <Text style={[styles.page, { color: colors.subtext }]}>{L.formatNumber(p.pageOf(item.spine, item.start))}</Text>
             </Pressable>
           )}
         />

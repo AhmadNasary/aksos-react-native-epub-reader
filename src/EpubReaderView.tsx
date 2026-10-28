@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Linking, Platform, Pressable, Share, StatusBar, StyleSheet, Text, useColorScheme, useWindowDimensions, View } from 'react-native';
-import { EpubReader } from './EpubReader';
+import { AccessibilityInfo, ActivityIndicator, Alert, Animated, Linking, Platform, Pressable, Share, StatusBar, StyleSheet, Text, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { EpubReader, sourceKeyOf } from './EpubReader';
 import type { EpubReaderHandle } from './EpubReader';
 import { chromeColors, DEFAULT_SETTINGS, isDark, themeColors } from './themes';
 import type {
@@ -13,6 +13,7 @@ import type {
   PageTurn,
   ReaderSettings,
   RelocateEvent,
+  SafeInsets,
   SearchResult,
   SelectionEvent,
   TocItem
@@ -21,6 +22,8 @@ import { AppearanceSheet } from './ui/AppearanceSheet';
 import { ContentsSheet } from './ui/ContentsSheet';
 import { CustomizeSheet } from './ui/CustomizeSheet';
 import { playPageTurn } from './sound';
+import { LabelsProvider, mergeLabels, useLabels } from './strings';
+import type { ReaderLabels } from './strings';
 import { Glass } from './ui/Glass';
 import { HighlightMenu } from './ui/HighlightMenu';
 import { Icon } from './ui/Icons';
@@ -33,7 +36,8 @@ export interface EpubReaderViewProps {
   source: EpubSource;
   /** shown in the Contents sheet until the book's own title is read */
   title?: string;
-  safeInsets?: { top: number; bottom: number };
+  /** Space for the status bar / home indicator (and notch in landscape). Use useSafeAreaInsets() from react-native-safe-area-context. */
+  safeInsets?: SafeInsets;
   initialLocation?: BookLocation;
   initialSettings?: Partial<ReaderSettings>;
   initialHighlights?: Highlight[];
@@ -46,6 +50,10 @@ export interface EpubReaderViewProps {
   onMetadata?: (m: BookMetadata) => void;
   onCover?: (dataUri: string) => void;
   onError?: (message: string) => void;
+  /** Texts of the interface; leave out what you do not translate (see ReaderLabels). */
+  labels?: Partial<ReaderLabels>;
+  /** Largest EPUB in bytes that will be opened (default 150 MB, 0 = no limit). */
+  maxFileSize?: number;
 }
 
 const RESET_THEME: Partial<ReaderSettings> = {
@@ -69,25 +77,49 @@ try {
   ScreenOrientation = null;
 }
 
-const DIM_LABELS: { id: DimLevel; label: string }[] = [
-  { id: 'high', label: 'High' },
-  { id: 'medium', label: 'Medium' },
-  { id: 'low', label: 'Low' },
-  { id: 'none', label: 'None' }
+const DIM_IDS: { id: DimLevel; label: 'dimHigh' | 'dimMedium' | 'dimLow' | 'dimNone' }[] = [
+  { id: 'high', label: 'dimHigh' },
+  { id: 'medium', label: 'dimMedium' },
+  { id: 'low', label: 'dimLow' },
+  { id: 'none', label: 'dimNone' }
 ];
 
 const SAMPLE = 'The reader turned the page slowly, listening to the wind move across the empty hills.';
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
-function defaultInsets() {
-  return Platform.OS === 'ios' ? { top: 50, bottom: 30 } : { top: StatusBar.currentHeight || 24, bottom: 0 };
+// Used when the host passes no safeInsets. A guess from the screen size; the exact values come from react-native-safe-area-context.
+function defaultInsets(width: number, height: number): SafeInsets {
+  if (Platform.OS !== 'ios') return { top: StatusBar.currentHeight || 24, bottom: 0 };
+  const long = Math.max(width, height);
+  const landscape = width > height;
+  const notch = long >= 812; // iPhone X and later (iPads are larger but have no notch: they are caught by the short side)
+  const phone = Math.min(width, height) < 600;
+  if (!phone) return { top: 24, bottom: 20 };
+  if (!notch) return { top: 20, bottom: 0 };
+  const top = long >= 852 ? 59 : 47;
+  return landscape ? { top: 0, bottom: 21, left: top, right: top } : { top, bottom: 34 };
 }
 
 type SheetName = null | 'contents' | 'search' | 'appearance' | 'customize';
 
+/**
+ * Full reader screen. A different `source` (or Try again after an error) starts a fresh screen, so highlights,
+ * bookmarks and position of one book can never leak into another.
+ */
 export function EpubReaderView(props: EpubReaderViewProps) {
-  const safe = props.safeInsets || defaultInsets();
+  const [attempt, setAttempt] = useState(0);
+  const labels = useMemo(() => mergeLabels(props.labels), [props.labels]);
+  return (
+    <LabelsProvider value={labels}>
+      <ReaderScreen key={`${sourceKeyOf(props.source)}#${attempt}`} {...props} onRetry={() => setAttempt((a) => a + 1)} />
+    </LabelsProvider>
+  );
+}
+
+function ReaderScreen(props: EpubReaderViewProps & { onRetry: () => void }) {
+  const L = useLabels();
   const screen = useWindowDimensions();
+  const safe = props.safeInsets || defaultInsets(screen.width, screen.height);
   const systemDark = useColorScheme() === 'dark';
   const reader = useRef<EpubReaderHandle>(null);
 
@@ -116,9 +148,34 @@ export function EpubReaderView(props: EpubReaderViewProps) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // the book could not be opened (or the reader engine stopped): a full screen with a way out
+  const [fatal, setFatal] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
   const searchId = useRef(0);
+  const latestProps = useRef(props);
+  latestProps.current = props;
+  const settingsRef = useRef(settings);
+  const highlightsRef = useRef(highlights);
+  const bookmarksRef = useRef(bookmarks);
+  const lockedByUs = useRef(false);
   const seen = useRef<Record<number, { len: number; pc: number }>>({});
   const layoutKey = useRef('');
+
+  useEffect(() => {
+    let on = true;
+    AccessibilityInfo.isReduceMotionEnabled?.().then((v) => on && setReduceMotion(!!v)).catch(() => undefined);
+    const sub = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (v: boolean) => setReduceMotion(!!v));
+    return () => {
+      on = false;
+      sub?.remove?.();
+    };
+  }, []);
+  // people who asked for less motion get the fade instead of the curl or slide
+  const readerSettings = useMemo(
+    () => (reduceMotion && (settings.pageTurn === 'curl' || settings.pageTurn === 'slide') ? { ...settings, pageTurn: 'fade' as PageTurn } : settings),
+    [settings, reduceMotion]
+  );
 
   const dark = isDark(settings, systemDark);
   const page = themeColors(settings, systemDark);
@@ -139,33 +196,26 @@ export function EpubReaderView(props: EpubReaderViewProps) {
   }, [chrome]);
 
   // ----- persistence helpers
-  const updateHighlights = useCallback(
-    (fn: (prev: Highlight[]) => Highlight[]) => {
-      setHighlights((prev) => {
-        const next = fn(prev);
-        props.onHighlightsChange?.(next);
-        return next;
-      });
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.onHighlightsChange]
-  );
-  const updateBookmarks = useCallback(
-    (fn: (prev: Bookmark[]) => Bookmark[]) => {
-      setBookmarks((prev) => {
-        const next = fn(prev);
-        props.onBookmarksChange?.(next);
-        return next;
-      });
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [props.onBookmarksChange]
-  );
-  const changeSettings = (patch: Partial<ReaderSettings>) => {
-    const next = { ...settings, ...patch };
+  // The next list is computed from a ref and the host is told outside of any state updater, so a callback
+  // never runs during render (StrictMode runs updaters twice) and quick successive edits never lose each other.
+  const updateHighlights = useCallback((fn: (prev: Highlight[]) => Highlight[]) => {
+    const next = fn(highlightsRef.current);
+    highlightsRef.current = next;
+    setHighlights(next);
+    latestProps.current.onHighlightsChange?.(next);
+  }, []);
+  const updateBookmarks = useCallback((fn: (prev: Bookmark[]) => Bookmark[]) => {
+    const next = fn(bookmarksRef.current);
+    bookmarksRef.current = next;
+    setBookmarks(next);
+    latestProps.current.onBookmarksChange?.(next);
+  }, []);
+  const changeSettings = useCallback((patch: Partial<ReaderSettings>) => {
+    const next = { ...settingsRef.current, ...patch };
+    settingsRef.current = next;
     setSettings(next);
-    props.onSettingsChange?.(next);
-  };
+    latestProps.current.onSettingsChange?.(next);
+  }, []);
 
   // ----- book page numbers (estimated from characters per page)
   const onRelocate = (e: RelocateEvent) => {
@@ -184,6 +234,7 @@ export function EpubReaderView(props: EpubReaderViewProps) {
     const next = pc > 0 && len > 0 ? len / pc : 1200;
     setCpp((old) => (Math.abs(old - next) / next > 0.01 ? next : old));
     setLoc(e);
+    setLoaded(true);
     setActive(null);
     props.onLocationChange?.(e);
   };
@@ -203,10 +254,10 @@ export function EpubReaderView(props: EpubReaderViewProps) {
   // header / footer drawn on the page: chapter title + page number, or "N pages left" + "x of y" while the controls are shown
   useEffect(() => {
     if (!loc) return;
-    const header = chrome ? (pagesLeft === 0 ? 'Last page in chapter' : `${pagesLeft} page${pagesLeft === 1 ? '' : 's'} left in chapter`) : loc.chapter;
-    const footer = chrome ? `${curPage} of ${totalPages}` : `${curPage}`;
+    const header = chrome ? (pagesLeft === 0 ? L.lastPageInChapter : L.pagesLeft(pagesLeft)) : loc.chapter;
+    const footer = chrome ? L.pageOfTotal(curPage, totalPages) : L.formatNumber(curPage);
     reader.current?.setLabels(header, footer);
-  }, [chrome, loc, curPage, totalPages, pagesLeft]);
+  }, [chrome, loc, curPage, totalPages, pagesLeft, L]);
 
   // ----- bookmarks
   const bookmarkHere = useMemo(
@@ -280,18 +331,20 @@ export function EpubReaderView(props: EpubReaderViewProps) {
   };
   const toggleRotationLock = async () => {
     if (!ScreenOrientation) {
-      Alert.alert('Rotation lock', 'Install expo-screen-orientation to enable the rotation lock.');
+      Alert.alert(L.rotationLock, L.rotationLockNeedsPackage);
       return;
     }
     try {
       if (rotLocked) {
         await ScreenOrientation.unlockAsync();
+        lockedByUs.current = false;
         setRotLocked(false);
       } else {
         const o = await ScreenOrientation.getOrientationAsync();
         const O = ScreenOrientation.Orientation;
         const L = ScreenOrientation.OrientationLock;
         await ScreenOrientation.lockAsync(o === O.LANDSCAPE_LEFT ? L.LANDSCAPE_LEFT : o === O.LANDSCAPE_RIGHT ? L.LANDSCAPE_RIGHT : L.PORTRAIT_UP);
+        lockedByUs.current = true;
         setRotLocked(true);
       }
     } catch {
@@ -300,7 +353,8 @@ export function EpubReaderView(props: EpubReaderViewProps) {
   };
   useEffect(
     () => () => {
-      if (ScreenOrientation) ScreenOrientation.unlockAsync().catch(() => undefined);
+      // only release a lock this reader set: the host app may have its own orientation policy
+      if (ScreenOrientation && lockedByUs.current) ScreenOrientation.unlockAsync().catch(() => undefined);
     },
     []
   );
@@ -310,6 +364,13 @@ export function EpubReaderView(props: EpubReaderViewProps) {
       setLineGuide(true);
       setChrome(false);
     } else setLineMenu(true);
+  };
+  const openLink = (href: string) => {
+    if (!/^(https?|mailto):/i.test(href)) return;
+    Alert.alert(L.openLink, href, [
+      { text: L.cancel, style: 'cancel' },
+      { text: L.open, onPress: () => Linking.openURL(href).catch(() => undefined) }
+    ]);
   };
   const share = () => {
     const text = [loc?.excerpt, meta?.title && `— ${meta.title}`].filter(Boolean).join(' ');
@@ -324,11 +385,12 @@ export function EpubReaderView(props: EpubReaderViewProps) {
       <EpubReader
         ref={reader}
         source={props.source}
-        settings={settings}
+        settings={readerSettings}
         systemDark={systemDark}
         safeInsets={safe}
         initialLocation={props.initialLocation}
         highlights={highlights}
+        maxFileSize={props.maxFileSize}
         onReady={({ metadata, rtl: isRtl }) => {
           setMeta(metadata);
           setRtl(isRtl);
@@ -354,17 +416,42 @@ export function EpubReaderView(props: EpubReaderViewProps) {
             setActive(null);
           }
         }}
-        onLink={(href) => Linking.openURL(href).catch(() => undefined)}
+        onLink={openLink}
+        onLinkJump={(from) => setReturnTo({ spine: from.spine, offset: from.offset, page: pageOf(from.spine, from.offset) })}
+        onDirectionChange={setRtl}
         onSearchResults={(id, found, done) => {
           if (id !== searchId.current) return;
           setResults((prev) => prev.concat(found));
           if (done) setSearching(false);
         }}
-        onError={(m) => {
-          setError(m);
+        onError={(m, info) => {
+          if (info.fatal || !loaded) setFatal(m);
+          else setError(m);
           props.onError?.(m);
         }}
       />
+
+      {/* screen readers cannot tap the page: this reveals the controls and turns pages */}
+      {!chrome && (
+        <View
+          pointerEvents="none"
+          accessible
+          accessibilityRole="button"
+          accessibilityLabel={L.readerMenu}
+          accessibilityActions={[
+            { name: 'activate', label: L.readerMenu },
+            { name: 'increment', label: 'Next page' },
+            { name: 'decrement', label: 'Previous page' }
+          ]}
+          onAccessibilityAction={(e) => {
+            const a = e.nativeEvent.actionName;
+            if (a === 'increment') reader.current?.next();
+            else if (a === 'decrement') reader.current?.prev();
+            else setChrome(true);
+          }}
+          style={[styles.a11yHandle, { bottom: safe.bottom, left: safe.left || 0 }]}
+        />
+      )}
 
       {/* page brightness */}
       <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', opacity: (1 - settings.brightness) * 0.75 }]} />
@@ -390,8 +477,8 @@ export function EpubReaderView(props: EpubReaderViewProps) {
       )}
 
       {/* close */}
-      <Animated.View pointerEvents={chrome ? 'auto' : 'none'} style={[styles.closeWrap, { top: safe.top + 2, opacity: fade }]}>
-        <Pressable onPress={props.onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="Close book">
+      <Animated.View pointerEvents={chrome ? 'auto' : 'none'} {...hiddenA11y(!chrome)} style={[styles.closeWrap, { top: safe.top + 2, right: 16 + (safe.right || 0), opacity: fade }]}>
+        <Pressable onPress={props.onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel={L.closeBook}>
           <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.circle}>
             <Icon name="close" color={tx} size={22} />
           </Glass>
@@ -400,7 +487,7 @@ export function EpubReaderView(props: EpubReaderViewProps) {
 
       {/* back to where we came from, like the "193" pill in Books */}
       {returnTo && (
-        <Animated.View pointerEvents={chrome ? 'auto' : 'none'} style={[styles.returnWrap, { top: safe.top + 2, opacity: fade }]}>
+        <Animated.View pointerEvents={chrome ? 'auto' : 'none'} {...hiddenA11y(!chrome)} style={[styles.returnWrap, { top: safe.top + 2, left: 16 + (safe.left || 0), opacity: fade }]}>
           <Pressable
             onPress={() => {
               reader.current?.goTo({ spine: returnTo.spine, offset: returnTo.offset });
@@ -408,11 +495,11 @@ export function EpubReaderView(props: EpubReaderViewProps) {
             }}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={`Return to page ${returnTo.page}`}
+            accessibilityLabel={L.returnToPage(returnTo.page)}
           >
             <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.returnPill}>
               <Icon name="undo" color={tx} size={22} />
-              <Text style={{ color: tx, fontSize: 20, marginStart: 8 }}>{returnTo.page}</Text>
+              <Text style={{ color: tx, fontSize: 20, marginStart: 8 }} maxFontSizeMultiplier={1.3}>{L.formatNumber(returnTo.page)}</Text>
             </Glass>
           </Pressable>
         </Animated.View>
@@ -421,9 +508,10 @@ export function EpubReaderView(props: EpubReaderViewProps) {
       {/* menu button (collapsed) */}
       <Animated.View
         pointerEvents={chrome && !menuOpen ? 'auto' : 'none'}
-        style={[styles.menuBtnWrap, { bottom: safe.bottom + 14, opacity: Animated.multiply(fade, Animated.subtract(1, menuFade)) }]}
+        {...hiddenA11y(!(chrome && !menuOpen))}
+        style={[styles.menuBtnWrap, { bottom: safe.bottom + 14, right: 16 + (safe.right || 0), opacity: Animated.multiply(fade, Animated.subtract(1, menuFade)) }]}
       >
-        <Pressable onPress={() => setMenuOpen(true)} accessibilityRole="button" accessibilityLabel="Reader menu">
+        <Pressable onPress={() => setMenuOpen(true)} accessibilityRole="button" accessibilityLabel={L.readerMenu}>
           <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.menuBtn}>
             <Icon name="list" color={tx} size={24} />
           </Glass>
@@ -431,19 +519,19 @@ export function EpubReaderView(props: EpubReaderViewProps) {
       </Animated.View>
 
       {/* floating controls (expanded menu) */}
-      <Animated.View pointerEvents={chrome && menuOpen ? 'box-none' : 'none'} style={[styles.controls, { bottom: safe.bottom + 44, opacity: menuFade }]}>
+      <Animated.View pointerEvents={chrome && menuOpen ? 'box-none' : 'none'} {...hiddenA11y(!(chrome && menuOpen))} style={[styles.controls, { bottom: safe.bottom + 44, right: 16 + (safe.right || 0), opacity: menuFade }]}>
         <Pressable
           onPress={() => {
             setMenuOpen(false);
             setSheet('contents');
           }}
           accessibilityRole="button"
-          accessibilityLabel="Contents"
+          accessibilityLabel={L.contents}
           style={styles.pillWrap}
         >
           <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.pill}>
             <View style={styles.pillRow} onLayout={(e) => setPillW(e.nativeEvent.layout.width)}>
-              <Text style={[styles.pillText, { color: tx }]}>Contents  •  {percent}%</Text>
+              <Text style={[styles.pillText, { color: tx }]} maxFontSizeMultiplier={1.3}>{L.contents}  •  {L.formatNumber(percent)}%</Text>
               <Icon name="list" color={tx} size={24} />
             </View>
             {/* progress fill with inverted text on top of it */}
@@ -452,7 +540,7 @@ export function EpubReaderView(props: EpubReaderViewProps) {
               style={[styles.fill, { width: progressFill * pillW, backgroundColor: dark ? 'rgba(255,255,255,0.35)' : '#1c1408', [rtl ? 'right' : 'left']: 0 }]}
             >
               <View style={[styles.pillRow, { position: 'absolute', top: 0, width: pillW, [rtl ? 'right' : 'left']: 0 }]}>
-                <Text style={[styles.pillText, { color: dark ? tx : '#ffffff' }]}>Contents  •  {percent}%</Text>
+                <Text style={[styles.pillText, { color: dark ? tx : '#ffffff' }]} maxFontSizeMultiplier={1.3}>{L.contents}  •  {L.formatNumber(percent)}%</Text>
                 <Icon name="list" color={dark ? tx : '#ffffff'} size={24} />
               </View>
             </View>
@@ -465,12 +553,12 @@ export function EpubReaderView(props: EpubReaderViewProps) {
             setSheet('search');
           }}
           accessibilityRole="button"
-          accessibilityLabel="Search book"
+          accessibilityLabel={L.searchBook}
           style={styles.pillWrap}
         >
           <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.pill}>
             <View style={styles.pillRow}>
-              <Text style={[styles.pillText, { color: tx }]}>Search Book</Text>
+              <Text style={[styles.pillText, { color: tx }]} maxFontSizeMultiplier={1.3}>{L.searchBook}</Text>
               <Icon name="search" color={tx} size={24} />
             </View>
           </Glass>
@@ -482,34 +570,34 @@ export function EpubReaderView(props: EpubReaderViewProps) {
             setSheet('appearance');
           }}
           accessibilityRole="button"
-          accessibilityLabel="Themes and settings"
+          accessibilityLabel={L.themesSettings}
           style={styles.pillWrap}
         >
           <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.pill}>
             <View style={styles.pillRow}>
-              <Text style={[styles.pillText, { color: tx }]}>Themes & Settings</Text>
+              <Text style={[styles.pillText, { color: tx }]} maxFontSizeMultiplier={1.3}>{L.themesSettings}</Text>
               <Icon name="textSize" color={tx} size={26} />
             </View>
           </Glass>
         </Pressable>
 
         <View style={styles.roundRow}>
-          <Pressable onPress={share} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel="Share">
+          <Pressable onPress={share} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel={L.share}>
             <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.round}>
               <Icon name="share" color={tx} size={24} />
             </Glass>
           </Pressable>
-          <Pressable onPress={toggleRotationLock} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel="Rotation lock" accessibilityState={{ selected: rotLocked }}>
+          <Pressable onPress={toggleRotationLock} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel={L.rotationLock} accessibilityState={{ selected: rotLocked }}>
             <Glass dark={dark} background={rotLocked ? (dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.18)') : colors.glass} border={colors.glassBorder} style={styles.round}>
               <Icon name="rotationLock" color={tx} size={26} active={rotLocked} />
             </Glass>
           </Pressable>
-          <Pressable onPress={onLineGuideButton} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel="Line guide" accessibilityState={{ selected: lineGuide }}>
+          <Pressable onPress={onLineGuideButton} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel={L.lineGuide} accessibilityState={{ selected: lineGuide }}>
             <Glass dark={dark} background={lineGuide ? (dark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.18)') : colors.glass} border={colors.glassBorder} style={styles.round}>
               <Icon name="lineGuide" color={tx} size={26} active={lineGuide} />
             </Glass>
           </Pressable>
-          <Pressable onPress={toggleBookmark} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel="Bookmark this page" accessibilityState={{ selected: bookmarkHere.length > 0 }}>
+          <Pressable onPress={toggleBookmark} style={styles.roundWrap} accessibilityRole="button" accessibilityLabel={L.bookmarkPage} accessibilityState={{ selected: bookmarkHere.length > 0 }}>
             <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.round}>
               <Icon name="bookmark" color={tx} size={24} active={bookmarkHere.length > 0} />
             </Glass>
@@ -518,7 +606,7 @@ export function EpubReaderView(props: EpubReaderViewProps) {
       </Animated.View>
 
 {selection && !active && !noteFor && (() => {
-        const w = 214;
+        const w = Math.min(Math.max(214, screen.width * 0.5), screen.width - 16);
         const r = selection.rect;
         const left = Math.max(8, Math.min(screen.width - w - 8, r.x + r.width / 2 - w / 2));
         // the system callout (Copy / Look Up) sits above the selection, so ours goes below it
@@ -530,20 +618,20 @@ export function EpubReaderView(props: EpubReaderViewProps) {
               style={styles.selBtn}
               onPress={() => createHighlight(selection, false)}
               accessibilityRole="button"
-              accessibilityLabel="Highlight"
+              accessibilityLabel={L.highlight}
             >
               <Icon name="highlighter" color={tx} size={22} />
-              <Text style={[styles.selText, { color: tx }]}>Highlight</Text>
+              <Text style={[styles.selText, { color: tx }]} numberOfLines={1} maxFontSizeMultiplier={1.2}>{L.highlight}</Text>
             </Pressable>
             <View style={[styles.selSep, { backgroundColor: colors.separator }]} />
             <Pressable
               style={styles.selBtn}
               onPress={() => createHighlight(selection, true)}
               accessibilityRole="button"
-              accessibilityLabel="Add note"
+              accessibilityLabel={L.addNote}
             >
               <Icon name="pencil" color={tx} size={22} />
-              <Text style={[styles.selText, { color: tx }]}>Note</Text>
+              <Text style={[styles.selText, { color: tx }]} numberOfLines={1} maxFontSizeMultiplier={1.2}>{L.note}</Text>
             </Pressable>
           </Glass>
         );
@@ -566,43 +654,89 @@ export function EpubReaderView(props: EpubReaderViewProps) {
         />
       )}
 
-      {error && (
-        <View style={[styles.error, { backgroundColor: colors.sheet }]}>
+      {/* opening the book: shown until the first page is there */}
+      {!loaded && !fatal && (
+        <View style={[StyleSheet.absoluteFill, styles.splash, { backgroundColor: page.bg }]} pointerEvents="box-none">
+          <ActivityIndicator color={page.fg} />
+          <Text style={{ color: page.fg, opacity: 0.6, marginTop: 12, fontSize: 15 }} maxFontSizeMultiplier={1.3}>
+            {L.loading}
+          </Text>
+          <Pressable
+            onPress={props.onClose}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={L.closeBook}
+            style={[styles.splashClose, { top: safe.top + 2, right: 16 + (safe.right || 0) }]}
+          >
+            <Glass dark={dark} background={colors.glass} border={colors.glassBorder} style={styles.circle}>
+              <Icon name="close" color={tx} size={22} />
+            </Glass>
+          </Pressable>
+        </View>
+      )}
+
+      {/* the book cannot be shown: always a way back */}
+      {!!fatal && (
+        <View style={[StyleSheet.absoluteFill, styles.splash, { backgroundColor: page.bg }]} accessibilityViewIsModal>
+          <Text style={{ color: page.fg, fontSize: 18, fontWeight: '600', textAlign: 'center' }} accessibilityRole="header">
+            {L.couldNotOpen}
+          </Text>
+          <Text style={{ color: page.fg, opacity: 0.7, fontSize: 15, textAlign: 'center', marginTop: 10 }} accessibilityRole="alert">
+            {fatal}
+          </Text>
+          <View style={styles.fatalButtons}>
+            <Pressable onPress={props.onRetry} style={[styles.fatalBtn, { backgroundColor: colors.accent }]} accessibilityRole="button">
+              <Text style={{ color: '#ffffff', fontSize: 16, fontWeight: '600' }}>{L.tryAgain}</Text>
+            </Pressable>
+            {!!props.onClose && (
+              <Pressable onPress={props.onClose} style={[styles.fatalBtn, { backgroundColor: colors.card }]} accessibilityRole="button">
+                <Text style={{ color: tx, fontSize: 16, fontWeight: '600' }}>{L.close}</Text>
+              </Pressable>
+            )}
+          </View>
+        </View>
+      )}
+
+      {error && !fatal && (
+        <View style={[styles.error, { backgroundColor: colors.sheet }]} accessibilityRole="alert">
           <Text style={{ color: colors.text, fontSize: 15, textAlign: 'center' }}>{error}</Text>
-          <Pressable onPress={() => setError(null)} style={{ marginTop: 12 }}>
-            <Text style={{ color: colors.accent, fontSize: 16 }}>OK</Text>
+          <Pressable onPress={() => setError(null)} style={{ marginTop: 12, padding: 8 }} accessibilityRole="button">
+            <Text style={{ color: colors.accent, fontSize: 16 }}>{L.ok}</Text>
           </Pressable>
         </View>
       )}
 
       {lineMenu && (
         <>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setLineMenu(false)} accessibilityLabel="Dismiss" />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setLineMenu(false)} accessibilityLabel={L.dismiss} />
           <View style={[styles.lineMenu, { bottom: safe.bottom + 20, backgroundColor: colors.dark ? '#4a4742' : '#ffffff', borderColor: colors.glassBorder }]}>
-            <Text style={[styles.lineMenuHead, { color: colors.subtext }]}>Background Dimming</Text>
-            {DIM_LABELS.map((d) => (
+            <Text style={[styles.lineMenuHead, { color: colors.subtext }]}>{L.backgroundDimming}</Text>
+            {DIM_IDS.map((d) => (
               <Pressable
                 key={d.id}
                 style={styles.lineItem}
+                accessibilityRole="button"
+                accessibilityState={{ selected: dimLevel === d.id }}
                 onPress={() => {
                   setDimLevel(d.id);
                   setLineMenu(false);
                 }}
               >
                 <View style={styles.lineCheck}>{dimLevel === d.id && <Icon name="check" color={tx} size={20} />}</View>
-                <Text style={{ color: tx, fontSize: 19 }}>{d.label}</Text>
+                <Text style={{ color: tx, fontSize: 19 }}>{L[d.label]}</Text>
               </Pressable>
             ))}
             <View style={[styles.lineSep, { backgroundColor: colors.separator }]} />
             <Pressable
               style={styles.lineItem}
+              accessibilityRole="button"
               onPress={() => {
                 setLineGuide(false);
                 setLineMenu(false);
               }}
             >
               <View style={styles.lineCheck} />
-              <Text style={{ color: tx, fontSize: 19 }}>Turn Off Line Guide</Text>
+              <Text style={{ color: tx, fontSize: 19 }}>{L.turnOffLineGuide}</Text>
             </Pressable>
           </View>
         </>
@@ -612,7 +746,7 @@ export function EpubReaderView(props: EpubReaderViewProps) {
         visible={sheet === 'contents'}
         colors={colors}
         title={meta?.title || props.title || ''}
-        subtitle={`Page ${curPage} of ${totalPages}`}
+        subtitle={L.pageOfTotalLong(curPage, totalPages)}
         toc={toc}
         currentSpine={loc?.spine ?? 0}
         pageOf={pageOf}
@@ -684,9 +818,9 @@ export function EpubReaderView(props: EpubReaderViewProps) {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  closeWrap: { position: 'absolute', right: 16 },
+  closeWrap: { position: 'absolute' },
   circle: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
-  controls: { position: 'absolute', right: 16, width: '68%' },
+  controls: { position: 'absolute', width: '68%', minWidth: 260, maxWidth: 420 },
   selBar: { position: 'absolute', height: 48, borderRadius: 24, flexDirection: 'row', alignItems: 'center' },
   selBtn: { flex: 1, height: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   selText: { fontSize: 15, fontWeight: '600' },
@@ -699,9 +833,9 @@ const styles = StyleSheet.create({
   lineItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 18 },
   lineCheck: { width: 34 },
   lineSep: { height: StyleSheet.hairlineWidth, marginVertical: 6, marginHorizontal: 18 },
-  menuBtnWrap: { position: 'absolute', right: 16 },
+  menuBtnWrap: { position: 'absolute' },
   menuBtn: { width: 54, height: 54, borderRadius: 27, alignItems: 'center', justifyContent: 'center' },
-  returnWrap: { position: 'absolute', left: 16 },
+  returnWrap: { position: 'absolute' },
   returnPill: { height: 46, borderRadius: 23, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16 },
   pillRow: { height: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 22 },
   pillWrap: { marginBottom: 8 },
@@ -717,5 +851,15 @@ const styles = StyleSheet.create({
     width: 0, height: 0, borderLeftWidth: 8, borderRightWidth: 8, borderBottomWidth: 7,
     borderLeftColor: '#ff3b30', borderRightColor: '#ff3b30', borderBottomColor: 'transparent'
   },
-  error: { position: 'absolute', left: 24, right: 24, top: '40%', padding: 20, borderRadius: 14, alignItems: 'center', elevation: 10 }
+  error: { position: 'absolute', left: 24, right: 24, top: '40%', padding: 20, borderRadius: 14, alignItems: 'center', elevation: 10 },
+  splash: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
+  splashClose: { position: 'absolute' },
+  fatalButtons: { flexDirection: 'row', gap: 12, marginTop: 24 },
+  fatalBtn: { minWidth: 110, height: 46, borderRadius: 23, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
+  a11yHandle: { position: 'absolute', width: 48, height: 48, backgroundColor: 'transparent' }
 });
+
+// controls that are faded out must not stay reachable for VoiceOver / TalkBack
+function hiddenA11y(hidden: boolean) {
+  return { accessibilityElementsHidden: hidden, importantForAccessibility: (hidden ? 'no-hide-descendants' : 'auto') as 'no-hide-descendants' | 'auto' };
+}

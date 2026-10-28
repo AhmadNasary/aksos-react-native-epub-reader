@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ChromeColors } from '../themes';
+import { useLabels } from '../strings';
 
 interface Props {
   visible: boolean;
@@ -12,20 +13,21 @@ interface Props {
 }
 
 export function NoteEditor({ visible, quote, initial, colors, onSave, onCancel }: Props) {
+  const L = useLabels();
   const [text, setText] = useState(initial);
   useEffect(() => setText(initial), [initial, visible]);
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onCancel}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.wrap}>
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onCancel} statusBarTranslucent>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.wrap}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onCancel} />
         <View style={[styles.card, { backgroundColor: colors.sheet }]}>
           <View style={styles.head}>
-            <Pressable onPress={onCancel} hitSlop={10}>
-              <Text style={{ color: colors.accent, fontSize: 17 }}>Cancel</Text>
+            <Pressable onPress={onCancel} hitSlop={12} accessibilityRole="button">
+              <Text style={{ color: colors.accent, fontSize: 17 }} maxFontSizeMultiplier={1.4}>{L.cancel}</Text>
             </Pressable>
-            <Text style={{ color: colors.text, fontSize: 17, fontWeight: '600' }}>Note</Text>
-            <Pressable onPress={() => onSave(text.trim())} hitSlop={10}>
-              <Text style={{ color: colors.accent, fontSize: 17, fontWeight: '600' }}>Save</Text>
+            <Text style={{ color: colors.text, fontSize: 17, fontWeight: '600' }} maxFontSizeMultiplier={1.4}>{L.note}</Text>
+            <Pressable onPress={() => onSave(text.trim())} hitSlop={12} accessibilityRole="button">
+              <Text style={{ color: colors.accent, fontSize: 17, fontWeight: '600' }} maxFontSizeMultiplier={1.4}>{L.save}</Text>
             </Pressable>
           </View>
           <Text numberOfLines={3} style={[styles.quote, { color: colors.subtext, borderColor: colors.accent }]}>
@@ -36,7 +38,7 @@ export function NoteEditor({ visible, quote, initial, colors, onSave, onCancel }
             multiline
             value={text}
             onChangeText={setText}
-            placeholder="Add a note"
+            placeholder={L.addANote}
             placeholderTextColor={colors.subtext}
             style={[styles.input, { color: colors.text, backgroundColor: colors.card }]}
           />

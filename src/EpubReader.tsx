@@ -11,20 +11,31 @@ import type {
   Highlight,
   ReaderSettings,
   RelocateEvent,
+  SafeInsets,
   SearchResult,
   SelectionEvent,
   TocItem
 } from './types';
+
+export interface ReaderErrorInfo {
+  /** true when the book cannot be shown (failed to open, reader engine stopped); false for a problem on one page */
+  fatal: boolean;
+}
 
 export interface EpubReaderProps {
   source: EpubSource;
   settings: ReaderSettings;
   /** system colour scheme, used when settings.appearance is 'device' */
   systemDark?: boolean;
-  /** Space reserved for status bar / home indicator. The engine adds room for the running header and footer. */
-  safeInsets?: { top: number; bottom: number };
+  /** Space reserved for status bar / home indicator (and the notch in landscape). The engine adds room for the running header and footer. */
+  safeInsets?: SafeInsets;
   initialLocation?: BookLocation | { progress: number };
   highlights?: Highlight[];
+  /**
+   * Largest EPUB (bytes) that will be loaded. The whole book is held in memory while it is opened, so very large
+   * files can crash low-memory phones. Default 150 MB, 0 disables the check.
+   */
+  maxFileSize?: number;
   /** Items added to the native text-selection menu. `onMenuAction` fires with the item key. */
   menuItems?: { label: string; key: string }[];
   onMenuAction?: (key: string, selection: SelectionEvent | null) => void;
@@ -39,10 +50,15 @@ export interface EpubReaderProps {
   onTap?: () => void;
   /** a page turn animation is starting (use it to play a sound) */
   onPageTurn?: () => void;
+  /** a web or mail link was tapped (other schemes are never forwarded). Open it yourself, ideally after asking. */
   onLink?: (href: string) => void;
+  /** an internal link (footnote, cross reference) is about to jump; `from` is where the reader was, so you can offer a way back */
+  onLinkJump?: (from: BookLocation) => void;
+  /** the reading direction changed (the user overrode it in the settings) */
+  onDirectionChange?: (rtl: boolean) => void;
   onSearchResults?: (searchId: number, results: SearchResult[], done: boolean) => void;
   onEndReached?: (edge: 'start' | 'end') => void;
-  onError?: (message: string) => void;
+  onError?: (message: string, info: ReaderErrorInfo) => void;
 }
 
 export interface EpubReaderHandle {
@@ -58,18 +74,51 @@ export interface EpubReaderHandle {
   setLabels(header: string, footer: string): void;
 }
 
-async function uriToBase64(uri: string): Promise<string> {
-  const res = await fetch(uri);
+const DEFAULT_MAX_FILE = 150 * 1024 * 1024;
+const ENGINE_START_TIMEOUT = 20000;
+const CHUNK = 256 * 1024;
+
+/** Identity of a source: the explicit `key`, the uri, or a fingerprint sampled across the base64 data. */
+export function sourceKeyOf(source: EpubSource): string {
+  if (source.key) return source.key;
+  if ('uri' in source) return source.uri;
+  const b = source.base64;
+  let h = 5381;
+  const step = Math.max(1, Math.floor(b.length / 512));
+  for (let i = 0; i < b.length; i += step) h = ((h << 5) + h + b.charCodeAt(i)) | 0;
+  return `b64:${b.length}:${h >>> 0}`;
+}
+
+async function uriToBase64(source: { uri: string; headers?: Record<string, string> }, maxBytes: number): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(source.uri, source.headers ? { headers: source.headers } : undefined);
+  } catch {
+    throw new Error('The book file could not be opened (it may have been moved or deleted, or there is no connection).');
+  }
+  // file:// responses report status 0 on some platforms, so only real HTTP errors count
+  if (res.status >= 400) throw new Error(`The book could not be downloaded (error ${res.status}).`);
   const blob = await res.blob();
+  if (maxBytes > 0 && blob.size > maxBytes) {
+    throw new Error(`This book is too large to open (${Math.round(blob.size / 1048576)} MB).`);
+  }
+  if (blob.size === 0) throw new Error('The book file is empty.');
   return new Promise<string>((resolve, reject) => {
     const fr = new FileReader();
-    fr.onerror = () => reject(fr.error);
+    fr.onerror = () => reject(new Error('The book file could not be read.'));
     fr.onloadend = () => {
       const s = String(fr.result);
       resolve(s.slice(s.indexOf(',') + 1));
     };
     fr.readAsDataURL(blob);
   });
+}
+
+function cleanBase64(data: string): string {
+  let s = data;
+  if (s.startsWith('data:')) s = s.slice(s.indexOf(',') + 1);
+  if (/\s/.test(s.slice(0, 4096)) || s.indexOf('\n') >= 0) s = s.replace(/\s+/g, '');
+  return s;
 }
 
 const LS = String.fromCharCode(0x2028);
@@ -87,40 +136,66 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
   const cb = useRef(props);
   cb.current = props;
   const [engineReady, setEngineReady] = useState(false);
+  // bumping this remounts the WebView (after the system killed its process)
+  const [webKey, setWebKey] = useState(0);
   const opened = useRef(false);
   const selection = useRef<SelectionEvent | null>(null);
   const metaRef = useRef<BookMetadata>({ title: '', author: '', language: '', publisher: '' });
+  const lastLoc = useRef<BookLocation | null>(null);
+  const lastKey = useRef('');
 
   const engineSettings = useMemo(
     () => toEngineSettings(settings, systemDark, safeInsets),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [settings, systemDark, safeInsets.top, safeInsets.bottom]
+    [settings, systemDark, safeInsets.top, safeInsets.bottom, safeInsets.left, safeInsets.right]
   );
+  // only what the engine actually uses decides about re-layout (the brightness slider, the page sound ... must not)
+  const engineJson = JSON.stringify(engineSettings);
+  const latest = useRef({ engineSettings, highlights });
+  latest.current = { engineSettings, highlights };
 
   const send = useCallback((cmd: object) => {
     web.current?.injectJavaScript(toScript(cmd));
   }, []);
 
+  // the engine never started (blocked WebView, out of memory ...)
+  useEffect(() => {
+    if (engineReady) return;
+    const t = setTimeout(() => cb.current.onError?.('The reader could not be started.', { fatal: true }), ENGINE_START_TIMEOUT);
+    return () => clearTimeout(t);
+  }, [engineReady, webKey]);
+
   // open (or re-open) the book once the engine is up
-  const sourceKey = 'uri' in source ? source.uri : source.base64.length + ':' + source.base64.slice(0, 32);
+  const sourceKey = sourceKeyOf(source);
   useEffect(() => {
     if (!engineReady) return;
     let cancelled = false;
     opened.current = false;
+    if (lastKey.current !== sourceKey) {
+      lastKey.current = sourceKey;
+      lastLoc.current = null;
+    }
     (async () => {
       try {
-        const data = 'uri' in source ? await uriToBase64(source.uri) : source.base64;
+        const limit = cb.current.maxFileSize ?? DEFAULT_MAX_FILE;
+        let data = 'uri' in source ? await uriToBase64(source, limit) : cleanBase64(source.base64);
         if (cancelled) return;
+        if (!data) throw new Error('The book file is empty.');
+        // the book travels in pieces: one huge string would exist several times over (JSON, bridge, page)
+        for (let i = 0; i < data.length; i += CHUNK) {
+          web.current?.injectJavaScript(`window.__chunk(${i === 0 ? 1 : 0},"${data.slice(i, i + CHUNK)}");true;`);
+        }
+        data = '';
+        // settings, highlights and position are read now, not when loading started
         send({
           cmd: 'open',
-          data,
-          settings: engineSettings,
-          highlights: highlights || [],
-          location: cb.current.initialLocation
+          settings: latest.current.engineSettings,
+          highlights: latest.current.highlights || [],
+          location: lastLoc.current || cb.current.initialLocation
         });
         opened.current = true;
       } catch (e) {
-        cb.current.onError?.(String((e as Error)?.message || e));
+        cb.current.onError?.(String((e as Error)?.message || e), { fatal: true });
       }
     })();
     return () => {
@@ -130,12 +205,19 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
   }, [engineReady, sourceKey]);
 
   useEffect(() => {
-    if (opened.current) send({ cmd: 'settings', settings: engineSettings });
-  }, [engineSettings, send]);
+    if (opened.current) send({ cmd: 'settings', settings: latest.current.engineSettings });
+  }, [engineJson, send]);
 
   useEffect(() => {
     if (opened.current) send({ cmd: 'highlights', list: highlights || [] });
   }, [highlights, send]);
+
+  // Android killed the renderer / iOS terminated the web content process: start over at the last position
+  const recover = useCallback(() => {
+    opened.current = false;
+    setEngineReady(false);
+    setWebKey((k) => k + 1);
+  }, []);
 
   useImperativeHandle(
     ref,
@@ -165,8 +247,9 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
     } catch {
       return;
     }
+    if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
     const p = cb.current;
-    const d = msg.data;
+    const d = msg.data && typeof msg.data === 'object' ? msg.data : {};
     switch (msg.type) {
       case 'ready':
         setEngineReady(true);
@@ -176,12 +259,13 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
         break;
       case 'toc':
         p.onReady?.({ metadata: metaRef.current, rtl: !!d.rtl });
-        p.onToc?.(d.items);
+        p.onToc?.(Array.isArray(d.items) ? d.items : []);
         break;
       case 'cover':
-        p.onCover?.(d.uri);
+        if (typeof d.uri === 'string') p.onCover?.(d.uri);
         break;
       case 'relocate':
+        lastLoc.current = { spine: d.spine, offset: d.offset };
         p.onRelocate?.(d);
         break;
       case 'indexed':
@@ -205,16 +289,22 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
         p.onPageTurn?.();
         break;
       case 'link':
-        p.onLink?.(d.href);
+        if (typeof d.href === 'string' && /^(https?|mailto):/i.test(d.href)) p.onLink?.(d.href);
+        break;
+      case 'linkJump':
+        p.onLinkJump?.({ spine: d.spine, offset: d.offset });
+        break;
+      case 'direction':
+        p.onDirectionChange?.(!!d.rtl);
         break;
       case 'searchResults':
-        p.onSearchResults?.(d.id, d.results, d.done);
+        p.onSearchResults?.(d.id, Array.isArray(d.results) ? d.results : [], !!d.done);
         break;
       case 'end':
         p.onEndReached?.(d.edge);
         break;
       case 'error':
-        p.onError?.(d.message);
+        p.onError?.(String(d.message || 'Unknown error'), { fatal: !!d.fatal });
         break;
     }
   }, []);
@@ -224,6 +314,7 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
   return (
     <View style={[styles.fill, { backgroundColor: bg }]}>
       <WebView
+        key={webKey}
         ref={web}
         style={[styles.fill, { backgroundColor: bg }]}
         originWhitelist={['*']}
@@ -241,13 +332,22 @@ export const EpubReader = forwardRef<EpubReaderHandle, EpubReaderProps>(function
         allowsInlineMediaPlayback
         hideKeyboardAccessoryView
         setSupportMultipleWindows={false}
+        // the page is generated here and never needs the file system, the network or the system font scale
+        allowFileAccess={false}
+        allowFileAccessFromFileURLs={false}
+        allowUniversalAccessFromFileURLs={false}
+        mixedContentMode="never"
+        cacheEnabled={false}
+        textZoom={100}
         menuItems={menuItems}
         onCustomMenuSelection={(e) => {
           const key = (e.nativeEvent as { key: string }).key;
           cb.current.onMenuAction?.(key, selection.current);
         }}
         onShouldStartLoadWithRequest={(req) => req.url === 'about:blank' || req.url.startsWith('data:') || req.url.startsWith('about:')}
-        onError={(e) => cb.current.onError?.(e.nativeEvent.description)}
+        onRenderProcessGone={recover}
+        onContentProcessDidTerminate={recover}
+        onError={(e) => cb.current.onError?.(e.nativeEvent.description || 'The reader failed to load.', { fatal: true })}
       />
     </View>
   );

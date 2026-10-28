@@ -101,7 +101,7 @@ export function themeColors(settings: ReaderSettings, systemDark: boolean): Them
 const BASE_MARGIN = 28;
 
 /** Settings object understood by the WebView engine. */
-export function toEngineSettings(settings: ReaderSettings, systemDark: boolean, insets: { top: number; bottom: number }) {
+export function toEngineSettings(settings: ReaderSettings, systemDark: boolean, insets: { top: number; bottom: number; left?: number; right?: number }) {
   const theme = getTheme(settings.themeId);
   const c = themeColors(settings, systemDark);
   const custom = settings.customize;
@@ -120,7 +120,7 @@ export function toEngineSettings(settings: ReaderSettings, systemDark: boolean, 
     justify: settings.justify,
     mode: settings.pageTurn,
     direction: settings.direction,
-    insets: { top: insets.top + 40, bottom: insets.bottom + 40 }
+    insets: { top: insets.top + 40, bottom: insets.bottom + 40, left: insets.left || 0, right: insets.right || 0 }
   };
 }
 

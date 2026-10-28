@@ -135,4 +135,20 @@ export interface ReaderSettings {
   direction: 'auto' | 'ltr' | 'rtl';
 }
 
-export type EpubSource = { uri: string } | { base64: string };
+/**
+ * Where the book comes from.
+ *  - uri: file://, content:// (Android), https://, or an asset/bundle URI that fetch() can read. `headers` are sent with the request.
+ *  - base64: the EPUB bytes as base64 (a data: prefix is accepted).
+ * `key` identifies the book: when it changes the reader opens the new source. Defaults to the uri, or to a fingerprint of the data.
+ */
+export type EpubSource =
+  | { uri: string; headers?: Record<string, string>; key?: string }
+  | { base64: string; key?: string };
+
+/** Safe-area space around the page, in points. Left/right matter in landscape on notched phones. */
+export interface SafeInsets {
+  top: number;
+  bottom: number;
+  left?: number;
+  right?: number;
+}
